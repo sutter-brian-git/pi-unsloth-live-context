@@ -38,6 +38,14 @@ On session start, on model select, and before every agent run it:
    restarting `llama-server` with a smaller `-c`) is picked up *before* the next
    request instead of surfacing as a hard error.
 
+The handlers **await** the sync — pi awaits extension handlers on these events,
+so the agent loop is blocked until the model is re-anchored. That ordering
+matters: pi's auto-compaction check runs right after `before_agent_start`, so a
+fire-and-forget sync would race it and could compact against a stale (lower)
+limit even though the live server has grown. Worst-case latency added per turn
+is the probe timeout (~2.5 s) when studio is unreachable; in sync, it's a
+~1–5 ms local HTTP GET.
+
 When the live value changes you'll see a status line in the footer:
 `unsloth-ctx: live context 111,872 tok`.
 

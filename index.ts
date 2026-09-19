@@ -25,7 +25,9 @@ import * as path from "node:path";
  *      value immediately.
  *   4. Re-probes before every agent run, so a mid-session VRAM change (studio
  *      restarting llama-server with a smaller -c) is picked up *before* the
- *      next LLM call instead of surfacing as a hard error.
+ *      next LLM call instead of surfacing as a hard error. The handlers await
+ *      the sync (pi awaits extension handlers), so auto-compaction in turn
+ *      preparation always sees the live limit — never a stale one.
  *
  * Safety: only entries with `loaded: true` are trusted; if studio is offline or
  * restarting, the probe returns null and the configured value is kept. The
@@ -139,16 +141,23 @@ export default function unslothLiveContext(pi: ExtensionAPI): void {
 		}
 	};
 
+	// NOTE: pi awaits extension handlers on these events, so returning a promise
+	// blocks the session/agent loop until the sync finishes. That is deliberate:
+	// the compaction check in turn preparation runs right after before_agent_start,
+	// so a fire-and-forget sync would race it and compact against a stale limit.
+	// syncActiveModel never rejects (all errors are caught inside), so awaiting
+	// it can only delay a turn by the probe timeout when studio is unreachable.
+
 	// New sessions, /resume, /new, /fork, /reload — all fire session_start.
-	pi.on("session_start", (_event, ctx) => {
-		void syncActiveModel(ctx);
+	pi.on("session_start", async (_event, ctx) => {
+		await syncActiveModel(ctx);
 	});
 	// Model switches (including "restore" on resume).
-	pi.on("model_select", (event, ctx) => {
-		if (event.model.provider === PROVIDER_ID) void syncActiveModel(ctx);
+	pi.on("model_select", async (event, ctx) => {
+		if (event.model.provider === PROVIDER_ID) await syncActiveModel(ctx);
 	});
 	// Catch mid-session VRAM changes before the next LLM call.
-	pi.on("before_agent_start", (_event, ctx) => {
-		void syncActiveModel(ctx);
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await syncActiveModel(ctx);
 	});
 }
