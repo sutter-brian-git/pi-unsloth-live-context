@@ -61,7 +61,18 @@ so the extension waits on those plus a session-branch poll.) Worst-case latency
 added per prompt: the load timeout when Studio has to cold-load, or the
 compaction wait when it summarizes; in sync it's a ~1–5 ms local HTTP GET.
 
-When the live value changes you'll see a status line in the footer:
+While a long wait is in progress (model loading, pre-submission compaction) a
+status line appears **above the editor** — pi's own "Working" indicator only
+activates once the agent run starts, which is after this extension's handler
+returns, so without it the delay would look like a frozen UI:
+
+```
+unsloth: waiting for the model to load…
+unsloth: compacting context before submission…
+```
+
+It disappears as soon as the wait ends (TUI only; print/rpc modes have no UI).
+When the live value changes you'll also see a status line in the footer:
 `unsloth-ctx: live context 111,872 tok`.
 
 ## Safety

@@ -66,6 +66,8 @@ const RESERVE_FRACTION = 0.1;
 /** How long to wait for a triggered compaction to finish before submitting anyway.
  * Summarizing a ~150k-token branch on a local model takes several minutes; keep this generous. */
 const COMPACT_WAIT_MS = Math.max(30, Number(process.env.PI_LIVE_CONTEXT_COMPACT_WAIT ?? 600)) * 1000;
+/** Widget key for the in-progress indicator shown above the editor (TUI only). */
+const WIDGET_KEY = "unsloth-live-context";
 
 interface StudioModelInfo {
 	id?: string;
@@ -140,10 +142,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Studio auto-switch load and waits (up to LOAD_TIMEOUT_MS) for the live
  * context to appear. Returns null when the value can't be determined.
  */
-async function ensureLoadedContext(modelId: string): Promise<number | null> {
+async function ensureLoadedContext(modelId: string, onWaiting?: () => void): Promise<number | null> {
 	const first = await probeStudio(modelId);
 	if (first.kind === "loaded") return first.context;
 	if (first.kind === "unreachable") return null;
+
+	onWaiting?.(); // the load will take a while - let the UI say so
 
 	// Studio is up but our model isn't resident. Trigger the auto-switch load
 	// with a minimal request. The full quant-suffixed id matters: bare ids load
@@ -209,6 +213,27 @@ function persistContextWindow(modelId: string, contextWindow: number): boolean {
 	}
 }
 
+/**
+ * In-progress indicator above the editor (TUI only; no-op in print/rpc modes).
+ * pi's own "Working" status only appears once the agent run is active, which is
+ * after our handler returns - so long waits (model load, compaction) would look
+ * like a frozen UI without this.
+ */
+const showWidget = (ctx: ExtensionContext, lines: string[]) => {
+	try {
+		(ctx.ui as any)?.setWidget?.(WIDGET_KEY, lines);
+	} catch {
+		// cosmetic only - never break the session over it
+	}
+};
+const hideWidget = (ctx: ExtensionContext) => {
+	try {
+		(ctx.ui as any)?.setWidget?.(WIDGET_KEY, undefined);
+	} catch {
+		// ignore
+	}
+};
+
 export default function unslothLiveContext(pi: ExtensionAPI): void {
 	let syncing = false;
 
@@ -218,7 +243,9 @@ export default function unslothLiveContext(pi: ExtensionAPI): void {
 		if (!model || model.provider !== PROVIDER_ID) return;
 		syncing = true;
 		try {
-			const live = ensureLoaded ? await ensureLoadedContext(model.id) : await probeLiveContext(model.id);
+			const live = ensureLoaded
+				? await ensureLoadedContext(model.id, () => showWidget(ctx, ["unsloth: waiting for the model to load…"]))
+				: await probeLiveContext(model.id);
 			if (live === null || model.contextWindow === live) return;
 
 			// 1. Persist for future sessions (new / resumed / other processes).
@@ -236,6 +263,7 @@ export default function unslothLiveContext(pi: ExtensionAPI): void {
 			console.error(`[unsloth-live-context] sync failed: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
 			syncing = false;
+			if (ensureLoaded) hideWidget(ctx); // clear any load-wait indicator we showed
 		}
 	};
 
@@ -265,6 +293,7 @@ export default function unslothLiveContext(pi: ExtensionAPI): void {
 			// that ignore the callbacks.
 			const getBranch = () => (ctx.sessionManager as any).getBranch?.() as Array<{ type?: string }> | undefined;
 			const branchBefore = getBranch()?.length ?? 0;
+			showWidget(ctx, ["unsloth: compacting context before submission…"]);
 			await new Promise<void>((resolve) => {
 				let done = false;
 				const finish = (note?: string) => {
@@ -272,6 +301,7 @@ export default function unslothLiveContext(pi: ExtensionAPI): void {
 					done = true;
 					clearInterval(poll);
 					clearTimeout(timeout);
+					hideWidget(ctx);
 					if (note) console.error(`[unsloth-live-context] ${note}`);
 					resolve();
 				};
